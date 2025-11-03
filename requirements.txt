@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+requests
+stripe
+pydantic
+logging
+celery
+redis
