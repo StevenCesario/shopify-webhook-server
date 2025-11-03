@@ -1,0 +1,168 @@
+import logging, time, os, re, requests, json, ipaddress
+import hashlib, hmac, base64
+from typing import Optional
+
+from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+# --- Basic Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+
+# --- Environment Variables ---
+FB_PIXEL_ID = os.getenv("FB_PIXEL_ID", "YOUR_PIXEL_ID")
+FB_ACCESS_TOKEN = os.getenv("FB_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN")
+
+# --- API URLs ---
+CAPI_URL = f"https://graph.facebook.com/v24.0/{FB_PIXEL_ID}/events?access_token={FB_ACCESS_TOKEN}"
+GA4_MEASUREMENT_ID = os.getenv("GA4_MEASUREMENT_ID", "YOUR_GA4_MEASUREMENT_ID")
+GA4_API_SECRET = os.getenv("GA4_API_SECRET", "YOUR_GA4_API_SECRET")
+GA4_URL = f"https://www.google-analytics.com/mp/collect?measurement_id={GA4_MEASUREMENT_ID}&api_secret={GA4_API_SECRET}"
+
+# --- Allowed Origins for CORS ---
+shopify_page_domain = "https://schemin-babys-store.myshopify.com/"
+
+# --- Regex for validation ---
+FBP_REGEX = re.compile(r'^fb\.1\.\d+\.\d+$')
+
+# --- FastAPI App Initialization ---
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        shopify_page_domain
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Pydantic Models ---
+class ClientPayload(BaseModel):
+    event_name: str
+    event_time: int
+    event_source_url: Optional[str] = None
+    action_source: str
+    user_data: dict
+    custom_data: Optional[dict] = None
+
+# --- Helper Functions ---
+def hash_data(value: str) -> str:
+    """Hashes a string value using SHA-256 for Meta CAPI."""
+    if not value:
+        return ""
+    return hashlib.sha256(value.strip().lower().encode()).hexdigest()
+
+def send_to_meta_capi(event_data: dict):
+    """
+    Constructs the final payload and sends a single event to the Meta Conversions API.
+    This function is now used by both endpoints.
+    """
+    meta_payload = {"data": [event_data]}
+    logging.info("Sending payload to Meta CAPI: %s", json.dumps(meta_payload, indent=2))
+
+    try:
+        response = requests.post(CAPI_URL, json=meta_payload)
+        response.raise_for_status()
+        logging.info("Meta CAPI Success Response: %s", response.json())
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logging.error("Meta CAPI request failed: %s", str(e))
+        error_detail = f"Meta CAPI request failed: {str(e)}"
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                error_detail += f" - Response: {e.response.text}"
+            except Exception:
+                pass
+        # This will be caught by the endpoint and turned into an HTTPException
+        raise ConnectionError(error_detail)
+
+
+# --- API Endpoints ---
+
+@app.post("/process-event")
+async def process_event(payload: ClientPayload, request: Request):
+    """Handles client-side browser events (PII-poor, browser-rich)."""
+    logging.info("Received client-side event payload: %s", payload.model_dump())
+    
+    # Existing logic for /process-event...
+    fbc_val = payload.user_data.get("fbc", "")
+    fbp_val = payload.user_data.get("fbp", "")
+    if fbc_val is None or (isinstance(fbc_val, str) and fbc_val.lower() == 'null'): fbc_val = ""
+    if fbp_val is None or (isinstance(fbp_val, str) and fbp_val.lower() == 'null'): fbp_val = ""
+
+    x_forwarded_for = request.headers.get("x-forwarded-for", "")
+    client_ip = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else (request.client.host if request.client else "")
+
+    client_user_agent = payload.user_data.get("user_agent", "") or request.headers.get("user-agent", "")
+
+    logging.info("Server-extracted IP: %s, User-Agent: %s, fbc: %s, fbp: %s", client_ip, client_user_agent, fbc_val, fbp_val)
+
+    try:
+        if client_ip: ipaddress.ip_address(client_ip)
+    except ValueError:
+        logging.warning("Invalid IP address: %s. Nullifying.", client_ip)
+        client_ip = ""
+    
+    if not FBP_REGEX.match(fbp_val):
+        if fbp_val: logging.warning("Invalid _fbp format: %s. Nullifying.", fbp_val)
+        fbp_val = ""
+
+    # Hashing PII from payload
+    hashed_email = hash_data(payload.user_data.get("email", ""))
+    hashed_first_name = hash_data(payload.user_data.get("first_name", ""))
+    # ... continue with all other hashing as before ...
+    hashed_last_name = hash_data(payload.user_data.get("last_name", ""))
+    hashed_phone = hash_data(payload.user_data.get("phone", ""))
+    hashed_country = hash_data(payload.user_data.get("country", "").lower() if payload.user_data.get("country") else "")
+    hashed_city = hash_data(payload.user_data.get("city", ""))
+    hashed_zip = hash_data(payload.user_data.get("zip", ""))
+
+    # Cleaning custom_data
+    final_cleaned_custom_data = {}
+    if payload.custom_data:
+        # ... logic for cleaning custom_data as before ...
+        final_cleaned_custom_data = {k: v for k, v in payload.custom_data.items() if v is not None and not (isinstance(v, str) and v.lower() == 'null')}
+        if "value" in final_cleaned_custom_data:
+            try:
+                final_cleaned_custom_data["value"] = float(final_cleaned_custom_data["value"])
+            except (ValueError, TypeError):
+                final_cleaned_custom_data["value"] = 0.0
+        if "currency" not in final_cleaned_custom_data or not final_cleaned_custom_data["currency"]:
+            final_cleaned_custom_data["currency"] = "SEK"
+            
+    # Building final Meta CAPI payload
+    meta_payload_user_data = {
+        "client_ip_address": client_ip,
+        "client_user_agent": client_user_agent,
+        "fbc": fbc_val,
+        "fbp": fbp_val,
+        "em": hashed_email,
+        "fn": hashed_first_name,
+        "ln": hashed_last_name,
+        "ph": hashed_phone,
+        "country": hashed_country,
+        "ct": hashed_city,
+        "zp": hashed_zip
+    }
+    meta_payload_user_data = {k: v for k, v in meta_payload_user_data.items() if v}
+
+    meta_payload_event_data = {
+        "event_name": payload.event_name,
+        "event_time": payload.event_time,
+        "action_source": payload.action_source,
+        "user_data": meta_payload_user_data,
+        "custom_data": final_cleaned_custom_data
+    }
+    if payload.event_source_url:
+        meta_payload_event_data["event_source_url"] = payload.event_source_url
+
+    try:
+        meta_response = send_to_meta_capi(meta_payload_event_data)
+        return {"status": "success", "meta_response": meta_response}
+    except ConnectionError as e:
+        raise HTTPException(status_code=500, detail=str(e))
