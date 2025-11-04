@@ -3,8 +3,8 @@ import time
 import os
 from celery import Celery
 
-# --- Helper functions from main.py ---
-from main import hash_data, send_to_meta_capi, CAPI_URL
+# --- Helper functions from utils.py ---
+from utils import hash_data, send_to_meta_capi, CAPI_URL
 
 # --- Environment Variable for Celery Broker ---
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")

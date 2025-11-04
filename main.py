@@ -6,8 +6,11 @@ from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# Helper functions from utils.py
+from utils import hash_data, send_to_meta_capi
+
 # NEW: Celery worker!
-from celery_worker import process_shopify_webhook
+from celery_worker import celery_app
 
 # --- Basic Setup ---
 logging.basicConfig(
@@ -16,12 +19,7 @@ logging.basicConfig(
 )
 
 # --- Environment Variables ---
-FB_PIXEL_ID = os.getenv("FB_PIXEL_ID", "YOUR_PIXEL_ID")
-FB_ACCESS_TOKEN = os.getenv("FB_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN")
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "SUPER_SECRET_SHOPIFY_CLIENT_SECRET")
-
-# --- API URLs ---
-CAPI_URL = f"https://graph.facebook.com/v24.0/{FB_PIXEL_ID}/events?access_token={FB_ACCESS_TOKEN}"
 
 # --- Allowed Origins for CORS ---
 shopify_page_domain = "https://schemin-babys-store.myshopify.com/"
@@ -84,35 +82,7 @@ def verify_shopify_hmac(secret: str, body: bytes, hmac_header: str) -> bool:
         logging.error(f"HMAC validation error: {e}")
         return False
 
-def hash_data(value: str) -> str:
-    """Hashes a string value using SHA-256 for Meta CAPI."""
-    if not value:
-        return ""
-    return hashlib.sha256(value.strip().lower().encode()).hexdigest()
-
-def send_to_meta_capi(event_data: dict):
-    """
-    Constructs the final payload and sends a single event to the Meta Conversions API.
-    This function is now used by both endpoints.
-    """
-    meta_payload = {"data": [event_data]}
-    logging.info("Sending payload to Meta CAPI: %s", json.dumps(meta_payload, indent=2))
-
-    try:
-        response = requests.post(CAPI_URL, json=meta_payload)
-        response.raise_for_status()
-        logging.info("Meta CAPI Success Response: %s", response.json())
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logging.error("Meta CAPI request failed: %s", str(e))
-        error_detail = f"Meta CAPI request failed: {str(e)}"
-        if hasattr(e, 'response') and e.response is not None:
-            try:
-                error_detail += f" - Response: {e.response.text}"
-            except Exception:
-                pass
-        # This will be caught by the endpoint and turned into an HTTPException
-        raise ConnectionError(error_detail)
+# hash_data and send_to_meta_capi helper functions moved to utils.py to prevent circular imports
 
 
 # --- API Endpoints ---
@@ -236,10 +206,13 @@ async def shopify_webhook(request: Request, x_shopify_hmac_sha256: str = Header(
         logging.error("Shopify Webhook: Failed to decode JSON body.")
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")
 
-    # 4. (Queue It!) Send the job to the Celery worker
-    # .delay() is the non-blocking call to run the task in the background
+    # 4. (Queue It!) Now using the clean way
     try:
-        process_shopify_webhook.delay(webhook_data)
+        # Using the Pylance-friendly way to call a task by its name
+        celery_app.send_task(
+            "process_shopify_webhook",  # The 'name' defined in the @celery_app.task decorator
+             args=[webhook_data]        # The arguments for the function
+        )
         logging.info("Shopify Webhook: Task successfully queued for processing.")
     except Exception as e:
         # This could happen if Redis is down
