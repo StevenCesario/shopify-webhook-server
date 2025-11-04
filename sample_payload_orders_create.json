@@ -1,0 +1,24 @@
+{
+  "id": 1234567890123,
+  "email": "steven.testerson@example.com",
+  "phone": "+15551234567",
+  "total_price": "149.99",
+  "currency": "USD",
+  "billing_address": {
+    "first_name": "Steven",
+    "last_name": "Testerson",
+    "name": "Steven Testerson",
+    "phone": "+15551234567",
+    "city": "Beverly Hills",
+    "zip": "90210",
+    "country_code": "US"
+  },
+  "line_items": [
+    {
+      "id": 987654321,
+      "name": "Test Product - Large",
+      "price": "149.99",
+      "quantity": 1
+    }
+  ]
+}
