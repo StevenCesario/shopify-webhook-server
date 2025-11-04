@@ -1,12 +1,13 @@
-import logging
-import time
-import os
+import logging, time
+import os, sys # sys for the new secret handling
 from celery import Celery
+from dotenv import load_dotenv
 
 # --- Helper functions from utils.py ---
 from utils import hash_data, send_to_meta_capi, CAPI_URL
 
 # --- Environment Variable for Celery Broker ---
+load_dotenv()
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 # --- Celery App Initialization ---
@@ -31,7 +32,6 @@ def process_shopify_webhook(webhook_data: dict):
 
     try:
         # --- 1. Parse Shopify PII ---
-        # TODO: To be verified against a real Shopify payload
         email = webhook_data.get('email')
         phone = webhook_data.get('phone')
 
@@ -47,9 +47,18 @@ def process_shopify_webhook(webhook_data: dict):
         value = float(webhook_data.get('total_price', 0.0))
         currency = webhook_data.get('currency', 'SEK').upper()
 
-        logging.info("Celery worker: Extracted PII from Shopify: email=%s, name=%s", bool(email), bool(full_name))
+        # --- 3. ⭐ NEW: Parse Browser & External ID data ---
+        client_ip = webhook_data.get('browser_ip')
+        client_details = webhook_data.get('client_details', {})
+        client_user_agent = client_details.get('user_agent')
+        order_id_str = str(webhook_data.get('id', '')) # Use order ID as external_id
 
-        # --- 3. Build the CAPI Payload (reusing hash_data function) ---
+        logging.info(
+            "Celery worker: Extracted PII: email=%s, name=%s, ip=%s, ua=%s",
+            bool(email), bool(full_name), bool(client_ip), bool(client_user_agent)
+        )
+
+        # --- 4. Build the CAPI Payload (reusing hash_data function) ---
         user_data = {
             "em": hash_data(email or ""),
             "fn": hash_data(first_name or ""),
@@ -57,7 +66,12 @@ def process_shopify_webhook(webhook_data: dict):
             "ph": hash_data(phone or ""),
             "ct": hash_data(city or ""),
             "zp": hash_data(postal_code or ""),
-            "country": hash_data(country_code or "")
+            "country": hash_data(country_code or ""),
+
+            # ⭐ NEW: Add browser/external data (modeled on your main.py)
+            "client_ip_address": (client_ip or None),
+            "client_user_agent": (client_user_agent or None),
+            "external_id": hash_data(order_id_str), # Hashed Shopify Order ID
         }
         # Remove any empty fields
         user_data = {k: v for k, v in user_data.items() if v}
@@ -67,17 +81,18 @@ def process_shopify_webhook(webhook_data: dict):
             "value": value
         }
 
+        event_id = f"shopify_{order_id_str}" # Use for deduplication
+
         meta_purchase_event = {
             "event_name": "Purchase",
             "event_time": int(time.time()),
             "action_source": "website", # From Shopify, but triggered by website action
             "user_data": user_data,
             "custom_data": custom_data,
-            # We can add order_id as event_id for deduplication
-            "event_id": f"shopify_{webhook_data.get('id')}" 
+            "event_id": event_id
         }
 
-        # --- 4. Send to Meta CAPI (reusing your send_to_meta_capi function) ---
+        # --- 5. Send to Meta CAPI (reusing send_to_meta_capi function) ---
         logging.info("Celery worker: Sending processed event to Meta CAPI.")
         send_to_meta_capi(meta_purchase_event)
 
