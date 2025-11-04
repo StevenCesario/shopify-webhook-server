@@ -31,6 +31,7 @@ except KeyError:
 
 # --- Allowed Origins for CORS ---
 shopify_page_domain = "https://schemin-babys-store.myshopify.com/"
+dev_store_domain = "https://test-dev-store-645645701.myshopify.com"
 
 # --- Regex for validation ---
 FBP_REGEX = re.compile(r'^fb\.1\.\d+\.\d+$')
@@ -41,7 +42,8 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        shopify_page_domain
+        shopify_page_domain,
+        dev_store_domain
     ],
     allow_credentials=True,
     allow_methods=["*"],
