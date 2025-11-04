@@ -102,7 +102,6 @@ async def process_event(payload: ClientPayload, request: Request):
     """Handles client-side browser events (PII-poor, browser-rich)."""
     logging.info("Received client-side event payload: %s", payload.model_dump())
     
-    # Existing logic for /process-event...
     fbc_val = payload.user_data.get("fbc", "")
     fbp_val = payload.user_data.get("fbp", "")
     if fbc_val is None or (isinstance(fbc_val, str) and fbc_val.lower() == 'null'): fbc_val = ""
@@ -111,6 +110,7 @@ async def process_event(payload: ClientPayload, request: Request):
     x_forwarded_for = request.headers.get("x-forwarded-for", "")
     client_ip = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else (request.client.host if request.client else "")
 
+    # We get this from the pixel now, but keep the server-side as a backup
     client_user_agent = payload.user_data.get("user_agent", "") or request.headers.get("user-agent", "")
 
     logging.info("Server-extracted IP: %s, User-Agent: %s, fbc: %s, fbp: %s", client_ip, client_user_agent, fbc_val, fbp_val)
@@ -125,15 +125,14 @@ async def process_event(payload: ClientPayload, request: Request):
         if fbp_val: logging.warning("Invalid _fbp format: %s. Nullifying.", fbp_val)
         fbp_val = ""
 
-    # Hashing PII from payload
-    hashed_email = hash_data(payload.user_data.get("email", ""))
-    hashed_first_name = hash_data(payload.user_data.get("first_name", ""))
-    # ... continue with all other hashing as before ...
-    hashed_last_name = hash_data(payload.user_data.get("last_name", ""))
-    hashed_phone = hash_data(payload.user_data.get("phone", ""))
+    # Hashing PII from payload, using the Meta keys ('em', 'fn') that our JavaScript pixel is sending.
+    hashed_email = hash_data(payload.user_data.get("em", ""))
+    hashed_first_name = hash_data(payload.user_data.get("fn", ""))
+    hashed_last_name = hash_data(payload.user_data.get("ln", ""))
+    hashed_phone = hash_data(payload.user_data.get("ph", ""))
     hashed_country = hash_data(payload.user_data.get("country", "").lower() if payload.user_data.get("country") else "")
-    hashed_city = hash_data(payload.user_data.get("city", ""))
-    hashed_zip = hash_data(payload.user_data.get("zip", ""))
+    hashed_city = hash_data(payload.user_data.get("ct", ""))
+    hashed_zip = hash_data(payload.user_data.get("zp", ""))
 
     # Cleaning custom_data
     final_cleaned_custom_data = {}
