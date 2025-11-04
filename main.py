@@ -6,6 +6,9 @@ from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+# NEW: Celery worker!
+from celery_worker import process_shopify_webhook
+
 # --- Basic Setup ---
 logging.basicConfig(
     level=logging.INFO,
@@ -15,12 +18,10 @@ logging.basicConfig(
 # --- Environment Variables ---
 FB_PIXEL_ID = os.getenv("FB_PIXEL_ID", "YOUR_PIXEL_ID")
 FB_ACCESS_TOKEN = os.getenv("FB_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN")
+SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "SUPER_SECRET_SHOPIFY_CLIENT_SECRET")
 
 # --- API URLs ---
 CAPI_URL = f"https://graph.facebook.com/v24.0/{FB_PIXEL_ID}/events?access_token={FB_ACCESS_TOKEN}"
-GA4_MEASUREMENT_ID = os.getenv("GA4_MEASUREMENT_ID", "YOUR_GA4_MEASUREMENT_ID")
-GA4_API_SECRET = os.getenv("GA4_API_SECRET", "YOUR_GA4_API_SECRET")
-GA4_URL = f"https://www.google-analytics.com/mp/collect?measurement_id={GA4_MEASUREMENT_ID}&api_secret={GA4_API_SECRET}"
 
 # --- Allowed Origins for CORS ---
 shopify_page_domain = "https://schemin-babys-store.myshopify.com/"
@@ -51,6 +52,38 @@ class ClientPayload(BaseModel):
     custom_data: Optional[dict] = None
 
 # --- Helper Functions ---
+# New helper function for HMAC Validation
+def verify_shopify_hmac(secret: str, body: bytes, hmac_header: str) -> bool:
+    """
+    Validates the Shopify HMAC signature.
+    """
+    if not hmac_header:
+        logging.warning("HMAC validation failed: No hmac_header provided.")
+        return False
+    if not secret:
+        logging.error("HMAC validation failed: SHOPIFY_CLIENT_SECRET is not set.")
+        return False
+    
+    try:
+        # 1. Create a new HMAC digest using the secret and the raw body
+        hash_digest = hmac.new(
+            secret.encode('utf-8'),
+            body,
+            hashlib.sha256
+        ).digest()
+        
+        # 2. Base64-encode the digest
+        computed_hmac_b64 = base64.b64encode(hash_digest)
+        
+        # 3. Compare securely (prevents timing attacks)
+        return hmac.compare_digest(
+            computed_hmac_b64,
+            hmac_header.encode('utf-8')
+        )
+    except Exception as e:
+        logging.error(f"HMAC validation error: {e}")
+        return False
+
 def hash_data(value: str) -> str:
     """Hashes a string value using SHA-256 for Meta CAPI."""
     if not value:
@@ -166,3 +199,53 @@ async def process_event(payload: ClientPayload, request: Request):
         return {"status": "success", "meta_response": meta_response}
     except ConnectionError as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/shopify-webhook")
+async def shopify_webhook(request: Request, x_shopify_hmac_sha256: str = Header(None)):
+    """
+    Handles server-side Shopify webhooks (e.g., orders/create).
+    
+    1. Verifies HMAC signature.
+    2. If valid, passes the raw body to a Celery queue for background processing.
+    3. Immediately returns 200 OK to Shopify.
+    """
+    
+    # 1. Get the raw request body (CRITICAL for HMAC)
+    payload_body = await request.body()
+
+    # 2. (Security First 🔐) Verify the HMAC signature
+    is_valid = verify_shopify_hmac(
+        secret=SHOPIFY_CLIENT_SECRET,
+        body=payload_body,
+        hmac_header=x_shopify_hmac_sha256
+    )
+
+    if not is_valid:
+        logging.error("Shopify Webhook: HMAC validation failed.")
+        raise HTTPException(
+            status_code=401, 
+            detail="HMAC validation failed. Request is not from Shopify."
+        )
+
+    logging.info("Shopify Webhook: HMAC validation successful.")
+
+    # 3. Parse body to JSON *after* validation
+    try:
+        webhook_data = json.loads(payload_body)
+    except json.JSONDecodeError:
+        logging.error("Shopify Webhook: Failed to decode JSON body.")
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
+    # 4. (Queue It!) Send the job to the Celery worker
+    # .delay() is the non-blocking call to run the task in the background
+    try:
+        process_shopify_webhook.delay(webhook_data)
+        logging.info("Shopify Webhook: Task successfully queued for processing.")
+    except Exception as e:
+        # This could happen if Redis is down
+        logging.critical(f"Shopify Webhook: FAILED TO QUEUE TASK: {e}")
+        # We must return 500 so Shopify retries
+        raise HTTPException(status_code=500, detail="Failed to queue task.")
+
+    # 5. (Fast Response!) Acknowledge receipt to Shopify immediately
+    return {"status": "success", "message": "Webhook received and queued."}

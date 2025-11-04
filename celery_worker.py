@@ -1,6 +1,5 @@
 import logging
 import time
-import json
 import os
 from celery import Celery
 
@@ -52,13 +51,40 @@ def process_shopify_webhook(webhook_data: dict):
 
         # --- 3. Build the CAPI Payload (reusing hash_data function) ---
         user_data = {
-            "em": hash_data(email),
-            "fn": hash_data(first_name),
-            "ln": hash_data(last_name),
-            "ph": hash_data(phone),
-            "ct": hash_data(city),
-            "zp": hash_data(postal_code),
-            "country": hash_data(country_code)
+            "em": hash_data(email or ""),
+            "fn": hash_data(first_name or ""),
+            "ln": hash_data(last_name or ""),
+            "ph": hash_data(phone or ""),
+            "ct": hash_data(city or ""),
+            "zp": hash_data(postal_code or ""),
+            "country": hash_data(country_code or "")
         }
         # Remove any empty fields
         user_data = {k: v for k, v in user_data.items() if v}
+
+        custom_data = {
+            "currency": currency,
+            "value": value
+        }
+
+        meta_purchase_event = {
+            "event_name": "Purchase",
+            "event_time": int(time.time()),
+            "action_source": "website", # From Shopify, but triggered by website action
+            "user_data": user_data,
+            "custom_data": custom_data,
+            # We can add order_id as event_id for deduplication
+            "event_id": f"shopify_{webhook_data.get('id')}" 
+        }
+
+        # --- 4. Send to Meta CAPI (reusing your send_to_meta_capi function) ---
+        logging.info("Celery worker: Sending processed event to Meta CAPI.")
+        send_to_meta_capi(meta_purchase_event)
+
+        logging.info("Celery worker: Successfully processed and sent Shopify event.")
+        return {"status": "success", "event_id": meta_purchase_event["event_id"]}
+    
+    except Exception as e:
+        logging.error(f"Celery worker: Failed to process Shopify webhook: {str(e)}", exc_info=True)
+        # Celery can be configured to retry this task
+        raise e
