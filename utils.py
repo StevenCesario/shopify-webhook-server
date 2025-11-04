@@ -1,14 +1,18 @@
 import logging
 import hashlib
-import json
-import requests
-import os
+import requests, json
+import os, sys
 from dotenv import load_dotenv
 
 # --- Environment Variables ---
 load_dotenv()
 FB_PIXEL_ID = os.getenv("FB_PIXEL_ID", "YOUR_PIXEL_ID")
-FB_ACCESS_TOKEN = os.getenv("FB_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN")
+try:
+    FB_ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
+except KeyError:
+    logging.critical("FATAL ERROR: FB_ACCESS_TOKEN environment variable not set.")
+    sys.exit(1) # Crash the program
+
 CAPI_URL = f"https://graph.facebook.com/v24.0/{FB_PIXEL_ID}/events?access_token={FB_ACCESS_TOKEN}"
 
 # --- Helper Functions ---

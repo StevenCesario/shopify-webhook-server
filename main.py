@@ -1,5 +1,7 @@
-import logging, time, os, re, requests, json, ipaddress
+import logging, time, re
+import requests, json, ipaddress
 import hashlib, hmac, base64
+import os, sys
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException, Header
@@ -21,7 +23,11 @@ logging.basicConfig(
 
 # --- Environment Variables ---
 load_dotenv()
-SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "SUPER_SECRET_SHOPIFY_CLIENT_SECRET")
+try:
+    SHOPIFY_CLIENT_SECRET = os.environ["SHOPIFY_CLIENT_SECRET"]
+except KeyError:
+    logging.critical("FATAL ERROR: SHOPIFY_CLIENT_SECRET environment variable not set.")
+    sys.exit(1) # Crash the program
 
 # --- Allowed Origins for CORS ---
 shopify_page_domain = "https://schemin-babys-store.myshopify.com/"
