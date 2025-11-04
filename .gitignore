@@ -1,2 +1,39 @@
-env/
+# =============================================================================
+# Secrets - NEVER commit these files!
+# =============================================================================
 .env
+.env.*
+
+# =============================================================================
+# General / IDE / OS Files
+# =============================================================================
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# =============================================================================
+# Python Backend
+# =============================================================================
+# Virtual Environments
+env/
+venv/
+ENV/
+
+# Python bytecode and cache
+pycache/
+*.py[cod]
+*$py.class
+
+# Distribution / Packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Local Database Files
+Your local database should never be committed.
+*.db
+*.sqlite3
