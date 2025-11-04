@@ -3,8 +3,10 @@ import hashlib
 import json
 import requests
 import os
+from dotenv import load_dotenv
 
 # --- Environment Variables ---
+load_dotenv()
 FB_PIXEL_ID = os.getenv("FB_PIXEL_ID", "YOUR_PIXEL_ID")
 FB_ACCESS_TOKEN = os.getenv("FB_ACCESS_TOKEN", "YOUR_ACCESS_TOKEN")
 CAPI_URL = f"https://graph.facebook.com/v24.0/{FB_PIXEL_ID}/events?access_token={FB_ACCESS_TOKEN}"

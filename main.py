@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from dotenv import load_dotenv
 
 # Helper functions from utils.py
 from utils import hash_data, send_to_meta_capi
@@ -19,6 +20,7 @@ logging.basicConfig(
 )
 
 # --- Environment Variables ---
+load_dotenv()
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET", "SUPER_SECRET_SHOPIFY_CLIENT_SECRET")
 
 # --- Allowed Origins for CORS ---
