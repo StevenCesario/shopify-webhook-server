@@ -54,6 +54,7 @@ app.add_middleware(
 class ClientPayload(BaseModel):
     event_name: str
     event_time: int
+    event_id: Optional[str] = None # Essential for deduplication
     event_source_url: Optional[str] = None
     action_source: str
     user_data: dict
