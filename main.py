@@ -134,6 +134,7 @@ async def process_event(payload: ClientPayload, request: Request):
     hashed_country = hash_data(payload.user_data.get("country", "").lower() if payload.user_data.get("country") else "")
     hashed_city = hash_data(payload.user_data.get("ct", ""))
     hashed_zip = hash_data(payload.user_data.get("zp", ""))
+    hashed_external_id = hash_data(payload.user_data.get("external_id", ""))
 
     # Cleaning custom_data
     final_cleaned_custom_data = {}
@@ -160,7 +161,8 @@ async def process_event(payload: ClientPayload, request: Request):
         "ph": hashed_phone,
         "country": hashed_country,
         "ct": hashed_city,
-        "zp": hashed_zip
+        "zp": hashed_zip,
+        "external_id": hashed_external_id
     }
     meta_payload_user_data = {k: v for k, v in meta_payload_user_data.items() if v}
 
@@ -173,6 +175,8 @@ async def process_event(payload: ClientPayload, request: Request):
     }
     if payload.event_source_url:
         meta_payload_event_data["event_source_url"] = payload.event_source_url
+    if payload.event_id:
+        meta_payload_event_data["event_id"] = payload.event_id
 
     try:
         meta_response = send_to_meta_capi(meta_payload_event_data)
