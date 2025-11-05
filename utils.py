@@ -2,6 +2,7 @@ import logging
 import hashlib
 import requests, json
 import os, sys
+from capi_param_builder import ParamBuilder
 from dotenv import load_dotenv
 
 # --- Environment Variables ---
@@ -15,8 +16,14 @@ except KeyError:
 
 CAPI_URL = f"https://graph.facebook.com/v24.0/{FB_PIXEL_ID}/events?access_token={FB_ACCESS_TOKEN}"
 
+# --- NEW: Meta Parameter Builder ---
+# We instantiate the builder here to be shared by main.py and celery_worker.py
+# Using "myshopify.com" as the eTLD+1 for our stores.
+# For cookies only. Meta are absolute nut jobs, writing about getNormalizedAndHashedPII when it doesn't exist
+paramBuilder = ParamBuilder(["myshopify.com"])
+
 # --- Helper Functions ---
-def hash_data(value: str) -> str:
+def hash_data(value: str) -> str: # Would be replaced by getNormalizedAndHashedPII *if it existed*
     """Hashes a string value using SHA-256 for Meta CAPI."""
     if not value:
         return ""

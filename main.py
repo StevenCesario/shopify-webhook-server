@@ -1,16 +1,16 @@
-import logging, time, re
-import requests, json, ipaddress
+import logging
+import json, ipaddress
 import hashlib, hmac, base64
 import os, sys
 from typing import Optional
 
-from fastapi import FastAPI, Request, HTTPException, Header
+from fastapi import FastAPI, Request, HTTPException, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 from dotenv import load_dotenv
 
 # Helper functions from utils.py
-from utils import hash_data, send_to_meta_capi
+from utils import hash_data, send_to_meta_capi, paramBuilder
 
 # NEW: Celery worker!
 from celery_worker import celery_app
@@ -34,7 +34,7 @@ shopify_page_domain = "https://schemin-babys-store.myshopify.com/"
 dev_store_domain = "https://test-dev-store-645645701.myshopify.com"
 
 # --- Regex for validation ---
-FBP_REGEX = re.compile(r'^fb\.1\.\d+\.\d+$')
+# FBP_REGEX = re.compile(r'^fb\.1\.\d+\.\d+$') # (REMOVED, SDK handles this)
 
 # --- FastAPI App Initialization ---
 app = FastAPI()
@@ -99,7 +99,7 @@ def verify_shopify_hmac(secret: str, body: bytes, hmac_header: str) -> bool:
 # --- API Endpoints ---
 
 @app.post("/process-event")
-async def process_event(request: Request): # Changed: now only takes the raw request
+async def process_event(request: Request, response: Response): # Changed: now only takes the raw request # Updated: and Response!
     """Handles client-side browser events (PII-poor, browser-rich)."""
     
     # -- New debugging block ---
@@ -121,36 +121,69 @@ async def process_event(request: Request): # Changed: now only takes the raw req
         raise HTTPException(status_code=422, detail=f"Invalid payload structure: {e}")
 
     logging.info("Received Pydantic-validated client-side event payload: %s", payload.model_dump())
-    
-    fbc_val = payload.user_data.get("fbc", "")
-    fbp_val = payload.user_data.get("fbp", "")
-    if fbc_val is None or (isinstance(fbc_val, str) and fbc_val.lower() == 'null'): fbc_val = ""
-    if fbp_val is None or (isinstance(fbp_val, str) and fbp_val.lower() == 'null'): fbp_val = ""
 
+    # --- NEW: Use Meta Parameter Builder ---
+    domain = request.headers.get("host", "")
+    cookie_dict = dict(request.cookies)
+    referral_link = request.headers.get("referer")
+
+    query_params_list_dict = {}
+    for key in request.query_params:
+        query_params_list_dict[key] = request.query_params.getlist(key)
+
+    # Process the request to generate/update cookies and get IP
+    updated_cookies = paramBuilder.process_request(
+        domain,
+        query_params_list_dict,
+        cookie_dict,
+        referral_link,
+    )
+
+    # Set the recommended cookies on the response
+    for cookie in updated_cookies:
+        response.set_cookie(
+            key=cookie.name,
+            value=cookie.value,
+            max_age=cookie.max_age,
+            domain=cookie.domain,
+            path="/"
+        )
+    
+    # Get values from the SDK (its main job)
+    sdk_fbc = paramBuilder.get_fbc()
+    sdk_fbp = paramBuilder.get_fbp()
+
+    # Get values from the pixel payload (our fallback)
+    pixel_fbc = payload.user_data.get("fbc", "")
+    pixel_fbp = payload.user_data.get("fbp", "")
+
+    # Prioritize the SDK's value, but fall back to the pixel's value
+    fbc_val = sdk_fbc if sdk_fbc else pixel_fbc
+    fbp_val = sdk_fbp if sdk_fbp else pixel_fbp
+
+    logging.info("SDK-extracted cookies: fbc: %s, fbp: %s", sdk_fbc, sdk_fbp)
+    logging.info("Pixel-provided cookies: fbc: %s, fbp: %s", pixel_fbc, pixel_fbp)
+    logging.info("FINAL fbc: %s, fbp: %s", fbc_val, fbp_val)
+
+    # Get IP and User-Agent manually
     x_forwarded_for = request.headers.get("x-forwarded-for", "")
     client_ip = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else (request.client.host if request.client else "")
-
-    # We get this from the pixel now, but keep the server-side as a backup
-    client_user_agent = payload.user_data.get("user_agent", "") or request.headers.get("user-agent", "")
-
-    logging.info("Server-extracted IP: %s, User-Agent: %s, fbc: %s, fbp: %s", client_ip, client_user_agent, fbc_val, fbp_val)
-
     try:
         if client_ip: ipaddress.ip_address(client_ip)
     except ValueError:
-        logging.warning("Invalid IP address: %s. Nullifying.", client_ip)
-        client_ip = ""
+        client_ip = "" # Nullify
     
-    if not FBP_REGEX.match(fbp_val):
-        if fbp_val: logging.warning("Invalid _fbp format: %s. Nullifying.", fbp_val)
-        fbp_val = ""
+    client_user_agent = payload.user_data.get("user_agent", "") or request.headers.get("user-agent", "")
+    
+    logging.info("SDK-extracted cookies: fbc: %s, fbp: %s", fbc_val, fbp_val)
+    logging.info("Manually-extracted IP: %s, User-Agent: %s", client_ip, client_user_agent)
 
-    # Hashing PII from payload, using the Meta keys ('em', 'fn') that our JavaScript pixel is sending.
+    # HASH PII using our v1.0 hash_data (SDK hashing doesn't exist)
     hashed_email = hash_data(payload.user_data.get("em", ""))
     hashed_first_name = hash_data(payload.user_data.get("fn", ""))
     hashed_last_name = hash_data(payload.user_data.get("ln", ""))
     hashed_phone = hash_data(payload.user_data.get("ph", ""))
-    hashed_country = hash_data(payload.user_data.get("country", "").lower() if payload.user_data.get("country") else "")
+    hashed_country = hash_data(payload.user_data.get("country", ""))
     hashed_city = hash_data(payload.user_data.get("ct", ""))
     hashed_zip = hash_data(payload.user_data.get("zp", ""))
     hashed_external_id = hash_data(payload.user_data.get("external_id", ""))
