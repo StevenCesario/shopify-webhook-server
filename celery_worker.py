@@ -32,11 +32,15 @@ def process_shopify_webhook(webhook_data: dict):
 
     try:
         # --- 1. Parse Shopify PII ---
-        email = webhook_data.get('email')
-        phone = webhook_data.get('phone')
-
-        # Billing address
+        email = webhook_data.get('email')        
         billing_address = webhook_data.get('billing_address', {})
+        shipping_address = webhook_data.get('shipping_address', {})
+        
+        # Using the same logic as the client side index.js
+        phone = webhook_data.get('phone') or \
+                billing_address.get('phone') or \
+                shipping_address.get('phone')
+        
         full_name = billing_address.get('name', '')
         first_name, last_name = (full_name.split(' ', 1) + [''])[:2] # Safe split
         city = billing_address.get('city')

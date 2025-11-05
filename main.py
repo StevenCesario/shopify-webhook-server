@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from dotenv import load_dotenv
 
 # Helper functions from utils.py
@@ -99,9 +99,28 @@ def verify_shopify_hmac(secret: str, body: bytes, hmac_header: str) -> bool:
 # --- API Endpoints ---
 
 @app.post("/process-event")
-async def process_event(payload: ClientPayload, request: Request):
+async def process_event(request: Request): # Changed: now only takes the raw request
     """Handles client-side browser events (PII-poor, browser-rich)."""
-    logging.info("Received client-side event payload: %s", payload.model_dump())
+    
+    # -- New debugging block ---
+    raw_payload = {}
+    try:
+        raw_payload = await request.json()
+        logging.info("RAW client-side payload RECEIVED: %s", raw_payload)
+    except Exception as e:
+        logging.error("Failed to parse raw JSON from pixel: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+    
+    # --- Manual Pydantic Validation ---
+    try:
+        payload = ClientPayload(**raw_payload)
+    except ValidationError as e:
+        logging.warning("Pydantic validation FAILED for raw payload: %s", e)
+        # We could still try to proceed, but it's safer to fail
+        # This will tell us if the pixel is sending a *completely* wrong structure
+        raise HTTPException(status_code=422, detail=f"Invalid payload structure: {e}")
+
+    logging.info("Received Pydantic-validated client-side event payload: %s", payload.model_dump())
     
     fbc_val = payload.user_data.get("fbc", "")
     fbp_val = payload.user_data.get("fbp", "")
