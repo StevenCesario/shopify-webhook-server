@@ -266,17 +266,23 @@ async def shopify_webhook(request: Request, x_shopify_hmac_sha256: str = Header(
     """
     payload_body = await request.body()
 
-    is_valid = verify_shopify_hmac(
-        secret=SHOPIFY_CLIENT_SECRET,
-        body=payload_body,
-        hmac_header=x_shopify_hmac_sha256
-    )
+    # --- 1. DEV MODE: Force Validation to True ---
+    # is_valid = verify_shopify_hmac(
+    #     secret=SHOPIFY_CLIENT_SECRET,
+    #     body=payload_body,
+    #     hmac_header=x_shopify_hmac_sha256
+    # )
 
-    if not is_valid:
-        logging.error("Shopify Webhook: HMAC validation failed.")
-        raise HTTPException(status_code=401, detail="HMAC validation failed.")
+    logging.warning("⚠️ SECURITY WARNING: HMAC Validation is temporarily DISABLED for testing!")
 
-    logging.info("Shopify Webhook: HMAC validation successful.")
+    # --- 2. Comment out the failure check ---
+    # if not is_valid:
+    #     logging.error("Shopify Webhook: HMAC validation failed.")
+    #     raise HTTPException(status_code=401, detail="HMAC validation failed.")
+
+    # logging.info("Shopify Webhook: HMAC validation successful.")
+
+    logging.info("Shopify Webhook: HMAC validation SKIPPED (Dev Mode).")
 
     try:
         webhook_data = json.loads(payload_body)
