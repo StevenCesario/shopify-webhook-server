@@ -32,37 +32,51 @@ def process_shopify_webhook(webhook_data: dict):
 
     try:
         # --- 1. Parse Shopify PII ---
+        # Safe extraction: .get() returns None by default, which is fine for our hash_data function
         email = webhook_data.get('email')        
-        billing_address = webhook_data.get('billing_address', {})
-        shipping_address = webhook_data.get('shipping_address', {})
         
-        # Using the same logic as the client side index.js
+        # Handle cases where addresses might be None
+        billing_address = webhook_data.get('billing_address') or {}
+        shipping_address = webhook_data.get('shipping_address') or {}
+        
         phone = webhook_data.get('phone') or \
                 billing_address.get('phone') or \
                 shipping_address.get('phone')
         
         full_name = billing_address.get('name', '')
-        first_name, last_name = (full_name.split(' ', 1) + [''])[:2] # Safe split
+        # Safe split even if name is empty
+        parts = full_name.split(' ', 1) if full_name else []
+        first_name = parts[0] if len(parts) > 0 else ''
+        last_name = parts[1] if len(parts) > 1 else ''
+        
         city = billing_address.get('city')
         postal_code = billing_address.get('zip')
-        country_code = billing_address.get('country_code') # e.g., "SE"
+        country_code = billing_address.get('country_code') 
 
         # --- 2. Parse Purchase Value ---
-        value = float(webhook_data.get('total_price', 0.0))
-        currency = webhook_data.get('currency', 'SEK').upper()
+        try:
+            value = float(webhook_data.get('total_price', 0.0))
+        except (ValueError, TypeError):
+            value = 0.0
+            
+        currency = webhook_data.get('currency', 'SEK')
+        if currency: currency = currency.upper()
 
-        # --- 3. ⭐ NEW: Parse Browser & External ID data ---
+        # --- 3. Parse Browser & External ID data ---
         client_ip = webhook_data.get('browser_ip')
-        client_details = webhook_data.get('client_details', {})
+        
+        # FIX: Handle if client_details is explicitly None
+        client_details = webhook_data.get('client_details') or {}
         client_user_agent = client_details.get('user_agent')
-        order_id_str = str(webhook_data.get('id', '')) # Use order ID as external_id
+        
+        order_id_str = str(webhook_data.get('id', '')) 
 
         logging.info(
             "Celery worker: Extracted PII: email=%s, name=%s, ip=%s, ua=%s",
             bool(email), bool(full_name), bool(client_ip), bool(client_user_agent)
         )
 
-        # --- 4. Build the CAPI Payload (reusing hash_data function) ---
+        # --- 4. Build the CAPI Payload ---
         user_data = {
             "em": hash_data(email or ""),
             "fn": hash_data(first_name or ""),
@@ -71,13 +85,11 @@ def process_shopify_webhook(webhook_data: dict):
             "ct": hash_data(city or ""),
             "zp": hash_data(postal_code or ""),
             "country": hash_data(country_code or ""),
-
-            # ⭐ NEW: Add browser/external data (modeled on your main.py)
             "client_ip_address": (client_ip or None),
             "client_user_agent": (client_user_agent or None),
-            "external_id": hash_data(order_id_str), # Hashed Shopify Order ID
+            "external_id": hash_data(order_id_str),
         }
-        # Remove any empty fields
+        # Remove empty fields
         user_data = {k: v for k, v in user_data.items() if v}
 
         custom_data = {
@@ -85,18 +97,18 @@ def process_shopify_webhook(webhook_data: dict):
             "value": value
         }
 
-        event_id = f"shopify_{order_id_str}" # Use for deduplication
+        event_id = f"shopify_{order_id_str}" 
 
         meta_purchase_event = {
             "event_name": "Purchase",
             "event_time": int(time.time()),
-            "action_source": "website", # From Shopify, but triggered by website action
+            "action_source": "website",
             "user_data": user_data,
             "custom_data": custom_data,
             "event_id": event_id
         }
 
-        # --- 5. Send to Meta CAPI (reusing send_to_meta_capi function) ---
+        # --- 5. Send to Meta CAPI ---
         logging.info("Celery worker: Sending processed event to Meta CAPI.")
         send_to_meta_capi(meta_purchase_event)
 
@@ -105,5 +117,5 @@ def process_shopify_webhook(webhook_data: dict):
     
     except Exception as e:
         logging.error(f"Celery worker: Failed to process Shopify webhook: {str(e)}", exc_info=True)
-        # Celery can be configured to retry this task
+        # Optional: raise e if you want Celery to mark it as FAILURE and potentially retry
         raise e
