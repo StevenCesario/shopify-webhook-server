@@ -267,22 +267,22 @@ async def shopify_webhook(request: Request, x_shopify_hmac_sha256: str = Header(
     payload_body = await request.body()
 
     # --- 1. DEV MODE: Force Validation to True ---
-    # is_valid = verify_shopify_hmac(
-    #     secret=SHOPIFY_CLIENT_SECRET,
-    #     body=payload_body,
-    #     hmac_header=x_shopify_hmac_sha256
-    # )
+    is_valid = verify_shopify_hmac(
+        secret=SHOPIFY_CLIENT_SECRET,
+        body=payload_body,
+        hmac_header=x_shopify_hmac_sha256
+    )
 
-    logging.warning("⚠️ SECURITY WARNING: HMAC Validation is temporarily DISABLED for testing!")
+    # logging.warning("⚠️ SECURITY WARNING: HMAC Validation is temporarily DISABLED for testing!")
 
     # --- 2. Comment out the failure check ---
-    # if not is_valid:
-    #     logging.error("Shopify Webhook: HMAC validation failed.")
-    #     raise HTTPException(status_code=401, detail="HMAC validation failed.")
+    if not is_valid:
+        logging.error("Shopify Webhook: HMAC validation failed.")
+        raise HTTPException(status_code=401, detail="HMAC validation failed.")
 
-    # logging.info("Shopify Webhook: HMAC validation successful.")
+    logging.info("Shopify Webhook: HMAC validation successful.")
 
-    logging.info("Shopify Webhook: HMAC validation SKIPPED (Dev Mode).")
+    # logging.info("Shopify Webhook: HMAC validation SKIPPED (Dev Mode).")
 
     try:
         webhook_data = json.loads(payload_body)
@@ -290,7 +290,7 @@ async def shopify_webhook(request: Request, x_shopify_hmac_sha256: str = Header(
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")
 
     try:
-        logging.info(f"🔍 DEBUG: Current Broker URL is: {celery_app.conf.broker_url}")
+        # logging.info(f"🔍 DEBUG: Current Broker URL is: {celery_app.conf.broker_url}")
         celery_app.send_task("process_shopify_webhook", args=[webhook_data])
         logging.info("Shopify Webhook: Task queued.")
     except Exception as e:
