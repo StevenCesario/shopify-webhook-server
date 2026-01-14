@@ -2,7 +2,7 @@ import logging
 import json, ipaddress
 import hashlib, hmac, base64
 import os, sys
-from typing import Optional
+from typing import Optional, List, Union
 
 from fastapi import FastAPI, Request, HTTPException, Header, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,11 +30,8 @@ except KeyError:
     sys.exit(1) # Crash the program
 
 # --- Allowed Origins for CORS ---
-shopify_page_domain = "https://schemin-babys-store.myshopify.com/"
-dev_store_domain = "https://test-dev-store-645645701.myshopify.com"
-
-# --- Regex for validation ---
-# FBP_REGEX = re.compile(r'^fb\.1\.\d+\.\d+$') # (REMOVED, SDK handles this)
+shopify_page_domain = "https://wearhelios.com/"
+dev_store_domain = "https://helios-dev-store.myshopify.com/"
 
 # --- FastAPI App Initialization ---
 app = FastAPI()
@@ -54,18 +51,20 @@ app.add_middleware(
 class ClientPayload(BaseModel):
     event_name: str
     event_time: int
-    event_id: Optional[str] = None # Essential for deduplication
+    event_id: Optional[str] = None
     event_source_url: Optional[str] = None
     action_source: str
     user_data: dict
     custom_data: Optional[dict] = None
 
+# NEW: Model for Meta's Batch/Test format
+class MetaTestPayload(BaseModel):
+    data: List[ClientPayload]
+    test_event_code: Optional[str] = None
+
 # --- Helper Functions ---
-# New helper function for HMAC Validation
 def verify_shopify_hmac(secret: str, body: bytes, hmac_header: str) -> bool:
-    """
-    Validates the Shopify HMAC signature.
-    """
+    """Validates the Shopify HMAC signature."""
     if not hmac_header:
         logging.warning("HMAC validation failed: No hmac_header provided.")
         return False
@@ -74,55 +73,26 @@ def verify_shopify_hmac(secret: str, body: bytes, hmac_header: str) -> bool:
         return False
     
     try:
-        # 1. Create a new HMAC digest using the secret and the raw body
-        hash_digest = hmac.new(
-            secret.encode('utf-8'),
-            body,
-            hashlib.sha256
-        ).digest()
-        
-        # 2. Base64-encode the digest
+        hash_digest = hmac.new(secret.encode('utf-8'), body, hashlib.sha256).digest()
         computed_hmac_b64 = base64.b64encode(hash_digest)
-        
-        # 3. Compare securely (prevents timing attacks)
-        return hmac.compare_digest(
-            computed_hmac_b64,
-            hmac_header.encode('utf-8')
-        )
+        return hmac.compare_digest(computed_hmac_b64, hmac_header.encode('utf-8'))
     except Exception as e:
         logging.error(f"HMAC validation error: {e}")
         return False
 
-# hash_data and send_to_meta_capi helper functions moved to utils.py to prevent circular imports
-
-
-# --- API Endpoints ---
-
-@app.post("/process-event")
-async def process_event(request: Request, response: Response): # Changed: now only takes the raw request # Updated: and Response!
-    """Handles client-side browser events (PII-poor, browser-rich)."""
+async def _process_single_event_logic(
+    payload: ClientPayload, 
+    request: Request, 
+    response: Response, 
+    test_event_code: Optional[str] = None
+):
+    """
+    Internal helper to process a single event payload. 
+    Handles cookie extraction, hashing, and sending to CAPI.
+    """
     
-    # -- New debugging block ---
-    raw_payload = {}
-    try:
-        raw_payload = await request.json()
-        logging.info("RAW client-side payload RECEIVED: %s", raw_payload)
-    except Exception as e:
-        logging.error("Failed to parse raw JSON from pixel: %s", e)
-        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
-    
-    # --- Manual Pydantic Validation ---
-    try:
-        payload = ClientPayload(**raw_payload)
-    except ValidationError as e:
-        logging.warning("Pydantic validation FAILED for raw payload: %s", e)
-        # We could still try to proceed, but it's safer to fail
-        # This will tell us if the pixel is sending a *completely* wrong structure
-        raise HTTPException(status_code=422, detail=f"Invalid payload structure: {e}")
-
-    logging.info("Received Pydantic-validated client-side event payload: %s", payload.model_dump())
-
-    # --- NEW: Use Meta Parameter Builder ---
+    # --- 1. Parameter Builder & Cookie Logic ---
+    # Note: If this is a server-to-server test call, these might be empty, which is fine.
     domain = request.headers.get("host", "")
     cookie_dict = dict(request.cookies)
     referral_link = request.headers.get("referer")
@@ -131,15 +101,11 @@ async def process_event(request: Request, response: Response): # Changed: now on
     for key in request.query_params:
         query_params_list_dict[key] = request.query_params.getlist(key)
 
-    # Process the request to generate/update cookies and get IP
     updated_cookies = paramBuilder.process_request(
-        domain,
-        query_params_list_dict,
-        cookie_dict,
-        referral_link,
+        domain, query_params_list_dict, cookie_dict, referral_link
     )
 
-    # Set the recommended cookies on the response
+    # Set cookies on response (useful for real browser traffic, harmless for test traffic)
     for cookie in updated_cookies:
         response.set_cookie(
             key=cookie.name,
@@ -149,36 +115,34 @@ async def process_event(request: Request, response: Response): # Changed: now on
             path="/"
         )
     
-    # Get values from the SDK (its main job)
+    # --- 2. Extract FBC/FBP ---
     sdk_fbc = paramBuilder.get_fbc()
     sdk_fbp = paramBuilder.get_fbp()
-
-    # Get values from the pixel payload (our fallback)
     pixel_fbc = payload.user_data.get("fbc", "")
     pixel_fbp = payload.user_data.get("fbp", "")
 
-    # Prioritize the SDK's value, but fall back to the pixel's value
     fbc_val = sdk_fbc if sdk_fbc else pixel_fbc
     fbp_val = sdk_fbp if sdk_fbp else pixel_fbp
 
-    logging.info("SDK-extracted cookies: fbc: %s, fbp: %s", sdk_fbc, sdk_fbp)
-    logging.info("Pixel-provided cookies: fbc: %s, fbp: %s", pixel_fbc, pixel_fbp)
-    logging.info("FINAL fbc: %s, fbp: %s", fbc_val, fbp_val)
+    # --- 3. IP and User Agent ---
+    # Prioritize what is in the payload (common in test events), fallback to request headers
+    payload_ip = payload.user_data.get("client_ip_address", "")
+    payload_ua = payload.user_data.get("client_user_agent", "")
 
-    # Get IP and User-Agent manually
-    x_forwarded_for = request.headers.get("x-forwarded-for", "")
-    client_ip = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else (request.client.host if request.client else "")
+    # If not in payload, extract from Request headers
+    if not payload_ip:
+        x_forwarded_for = request.headers.get("x-forwarded-for", "")
+        payload_ip = x_forwarded_for.split(",")[0].strip() if x_forwarded_for else (request.client.host if request.client else "")
+    
+    # Validate IP
     try:
-        if client_ip: ipaddress.ip_address(client_ip)
+        if payload_ip: ipaddress.ip_address(payload_ip)
     except ValueError:
-        client_ip = "" # Nullify
-    
-    client_user_agent = payload.user_data.get("user_agent", "") or request.headers.get("user-agent", "")
-    
-    logging.info("SDK-extracted cookies: fbc: %s, fbp: %s", fbc_val, fbp_val)
-    logging.info("Manually-extracted IP: %s, User-Agent: %s", client_ip, client_user_agent)
+        payload_ip = ""
 
-    # HASH PII using our v1.0 hash_data (SDK hashing doesn't exist)
+    client_user_agent = payload_ua or request.headers.get("user-agent", "")
+
+    # --- 4. Hashing PII ---
     hashed_email = hash_data(payload.user_data.get("em", ""))
     hashed_first_name = hash_data(payload.user_data.get("fn", ""))
     hashed_last_name = hash_data(payload.user_data.get("ln", ""))
@@ -188,10 +152,9 @@ async def process_event(request: Request, response: Response): # Changed: now on
     hashed_zip = hash_data(payload.user_data.get("zp", ""))
     hashed_external_id = hash_data(payload.user_data.get("external_id", ""))
 
-    # Cleaning custom_data
+    # --- 5. Clean Custom Data ---
     final_cleaned_custom_data = {}
     if payload.custom_data:
-        # ... logic for cleaning custom_data as before ...
         final_cleaned_custom_data = {k: v for k, v in payload.custom_data.items() if v is not None and not (isinstance(v, str) and v.lower() == 'null')}
         if "value" in final_cleaned_custom_data:
             try:
@@ -200,10 +163,10 @@ async def process_event(request: Request, response: Response): # Changed: now on
                 final_cleaned_custom_data["value"] = 0.0
         if "currency" not in final_cleaned_custom_data or not final_cleaned_custom_data["currency"]:
             final_cleaned_custom_data["currency"] = "SEK"
-            
-    # Building final Meta CAPI payload
+
+    # --- 6. Build Meta Payload ---
     meta_payload_user_data = {
-        "client_ip_address": client_ip,
+        "client_ip_address": payload_ip,
         "client_user_agent": client_user_agent,
         "fbc": fbc_val,
         "fbp": fbp_val,
@@ -216,6 +179,7 @@ async def process_event(request: Request, response: Response): # Changed: now on
         "zp": hashed_zip,
         "external_id": hashed_external_id
     }
+    # Remove empty keys
     meta_payload_user_data = {k: v for k, v in meta_payload_user_data.items() if v}
 
     meta_payload_event_data = {
@@ -225,31 +189,86 @@ async def process_event(request: Request, response: Response): # Changed: now on
         "user_data": meta_payload_user_data,
         "custom_data": final_cleaned_custom_data
     }
+
     if payload.event_source_url:
         meta_payload_event_data["event_source_url"] = payload.event_source_url
     if payload.event_id:
         meta_payload_event_data["event_id"] = payload.event_id
-
-    try:
-        meta_response = send_to_meta_capi(meta_payload_event_data)
-        return {"status": "success", "meta_response": meta_response}
-    except ConnectionError as e:
-        raise HTTPException(status_code=500, detail=str(e))
     
+    # IMPORTANT: Attach the test_event_code if it exists!
+    if test_event_code:
+        meta_payload_event_data["test_event_code"] = test_event_code
+
+    # --- 7. Send to Meta ---
+    return send_to_meta_capi(meta_payload_event_data)
+
+
+# --- API Endpoints ---
+
+@app.post("/process-event")
+async def process_event(request: Request, response: Response):
+    """
+    Handles client-side browser events.
+    Supports both single 'ClientPayload' and batched/test 'MetaTestPayload'.
+    """
+    
+    # 1. Parse Raw JSON
+    raw_payload = {}
+    try:
+        raw_payload = await request.json()
+    except Exception as e:
+        logging.error("Failed to parse raw JSON: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
+    # 2. Determine Payload Type (Batch vs Single)
+    events_to_process = []
+    test_code = None
+
+    # Check if this matches the "MetaTestPayload" structure (has 'data' list)
+    if "data" in raw_payload and isinstance(raw_payload["data"], list):
+        logging.info("Received BATCH/TEST payload structure.")
+        try:
+            batch_data = MetaTestPayload(**raw_payload)
+            events_to_process = batch_data.data
+            test_code = batch_data.test_event_code
+            logging.info(f"Processing batch of {len(events_to_process)} events. Test Code: {test_code}")
+        except ValidationError as e:
+            logging.error("Validation failed for Batch Payload: %s", e)
+            raise HTTPException(status_code=422, detail=f"Invalid Batch structure: {e}")
+    else:
+        # Assume it's a single "ClientPayload"
+        logging.info("Received SINGLE event payload structure.")
+        try:
+            single_data = ClientPayload(**raw_payload)
+            events_to_process = [single_data]
+            # No test code for standard single events usually, unless passed somehow else
+        except ValidationError as e:
+            logging.error("Validation failed for Single Payload: %s", e)
+            raise HTTPException(status_code=422, detail=f"Invalid Payload structure: {e}")
+
+    # 3. Process All Events
+    results = []
+    for event in events_to_process:
+        try:
+            # We await the helper function for each event
+            # Note: In high-volume production, you might use asyncio.gather to do this in parallel
+            res = await _process_single_event_logic(event, request, response, test_code)
+            results.append(res)
+        except ConnectionError as e:
+            logging.error(f"Connection error sending to Meta: {e}")
+            # We don't crash the whole batch for one failure, but we log it
+            results.append({"error": str(e)})
+
+    return {"status": "success", "processed_count": len(results), "meta_responses": results}
+
+
 @app.post("/shopify-webhook")
 async def shopify_webhook(request: Request, x_shopify_hmac_sha256: str = Header(None)):
     """
-    Handles server-side Shopify webhooks (e.g., orders/create).
-    
-    1. Verifies HMAC signature.
-    2. If valid, passes the raw body to a Celery queue for background processing.
-    3. Immediately returns 200 OK to Shopify.
+    Handles server-side Shopify webhooks.
     """
-    
-    # 1. Get the raw request body (CRITICAL for HMAC)
     payload_body = await request.body()
 
-    # 2. (Security First 🔐) Verify the HMAC signature
     is_valid = verify_shopify_hmac(
         secret=SHOPIFY_CLIENT_SECRET,
         body=payload_body,
@@ -258,33 +277,20 @@ async def shopify_webhook(request: Request, x_shopify_hmac_sha256: str = Header(
 
     if not is_valid:
         logging.error("Shopify Webhook: HMAC validation failed.")
-        raise HTTPException(
-            status_code=401, 
-            detail="HMAC validation failed. Request is not from Shopify."
-        )
+        raise HTTPException(status_code=401, detail="HMAC validation failed.")
 
     logging.info("Shopify Webhook: HMAC validation successful.")
 
-    # 3. Parse body to JSON *after* validation
     try:
         webhook_data = json.loads(payload_body)
     except json.JSONDecodeError:
-        logging.error("Shopify Webhook: Failed to decode JSON body.")
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")
 
-    # 4. (Queue It!) Now using the clean way
     try:
-        # Using the Pylance-friendly way to call a task by its name
-        celery_app.send_task(
-            "process_shopify_webhook",  # The 'name' defined in the @celery_app.task decorator
-             args=[webhook_data]        # The arguments for the function
-        )
-        logging.info("Shopify Webhook: Task successfully queued for processing.")
+        celery_app.send_task("process_shopify_webhook", args=[webhook_data])
+        logging.info("Shopify Webhook: Task queued.")
     except Exception as e:
-        # This could happen if Redis is down
         logging.critical(f"Shopify Webhook: FAILED TO QUEUE TASK: {e}")
-        # We must return 500 so Shopify retries
         raise HTTPException(status_code=500, detail="Failed to queue task.")
 
-    # 5. (Fast Response!) Acknowledge receipt to Shopify immediately
     return {"status": "success", "message": "Webhook received and queued."}
