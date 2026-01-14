@@ -290,6 +290,7 @@ async def shopify_webhook(request: Request, x_shopify_hmac_sha256: str = Header(
         raise HTTPException(status_code=400, detail="Invalid JSON payload.")
 
     try:
+        logging.info(f"🔍 DEBUG: Current Broker URL is: {celery_app.conf.broker_url}")
         celery_app.send_task("process_shopify_webhook", args=[webhook_data])
         logging.info("Shopify Webhook: Task queued.")
     except Exception as e:
