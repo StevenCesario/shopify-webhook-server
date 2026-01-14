@@ -195,12 +195,9 @@ async def _process_single_event_logic(
     if payload.event_id:
         meta_payload_event_data["event_id"] = payload.event_id
     
-    # IMPORTANT: Attach the test_event_code if it exists!
-    if test_event_code:
-        meta_payload_event_data["test_event_code"] = test_event_code
-
     # --- 7. Send to Meta ---
-    return send_to_meta_capi(meta_payload_event_data)
+    # We don't add test_event_code to meta_payload_event_data here. Pass the test_code as a separate argument
+    return send_to_meta_capi(meta_payload_event_data, test_code=test_event_code)
 
 
 # --- API Endpoints ---

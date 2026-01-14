@@ -2,6 +2,7 @@ import logging
 import hashlib
 import requests, json
 import os, sys
+from typing import Optional, Any
 from capi_param_builder import ParamBuilder
 from dotenv import load_dotenv
 
@@ -19,21 +20,30 @@ CAPI_URL = f"https://graph.facebook.com/v24.0/{FB_PIXEL_ID}/events?access_token=
 # --- NEW: Meta Parameter Builder ---
 # We instantiate the builder here to be shared by main.py and celery_worker.py
 # Using "myshopify.com" as the eTLD+1 for our stores.
-# For cookies only. Meta are absolute nut jobs, writing about getNormalizedAndHashedPII when it doesn't exist
 paramBuilder = ParamBuilder(["myshopify.com"])
 
 # --- Helper Functions ---
-def hash_data(value: str) -> str: # Would be replaced by getNormalizedAndHashedPII *if it existed*
+def hash_data(value: str) -> str: 
     """Hashes a string value using SHA-256 for Meta CAPI."""
     if not value:
         return ""
     return hashlib.sha256(value.strip().lower().encode()).hexdigest()
 
-def send_to_meta_capi(event_data: dict):
+def send_to_meta_capi(event_data: dict, test_code: Optional[str] = None):
     """
     Constructs the final payload and sends a single event to the Meta Conversions API.
+    
+    Args:
+        event_data (dict): The event object (containing event_name, user_data, etc.)
+        test_code (str, optional): The test_event_code for debugging in Events Manager.
     """
-    meta_payload = {"data": [event_data]}
+    # Fix: Explicitly type hint the dict so Pylance knows it can hold mixed types
+    meta_payload: dict[str, Any] = {"data": [event_data]}
+    
+    # Add test_event_code to the ROOT level if provided
+    if test_code:
+        meta_payload["test_event_code"] = test_code
+
     logging.info("Sending payload to Meta CAPI: %s", json.dumps(meta_payload, indent=2))
 
     try:
@@ -42,11 +52,15 @@ def send_to_meta_capi(event_data: dict):
         logging.info("Meta CAPI Success Response: %s", response.json())
         return response.json()
     except requests.exceptions.RequestException as e:
-        logging.error("Meta CAPI request failed: %s", str(e))
-        error_detail = f"Meta CAPI request failed: {str(e)}"
+        # Construct a detailed error message including the response body if available
+        error_msg = f"Meta CAPI request failed: {str(e)}"
         if hasattr(e, 'response') and e.response is not None:
             try:
-                error_detail += f" - Response: {e.response.text}"
+                # Append the JSON error from Meta (e.g., "Unexpected key")
+                error_msg += f" - Response: {e.response.text}"
             except Exception:
                 pass
-        raise ConnectionError(error_detail)
+        
+        logging.error(error_msg)
+        # Raise a ConnectionError so the caller knows it failed
+        raise ConnectionError(error_msg)
