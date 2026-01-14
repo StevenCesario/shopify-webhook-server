@@ -171,22 +171,25 @@ async def _process_single_event_logic(
             final_cleaned_custom_data["currency"] = "SEK"
 
     # --- 6. Build Meta Payload ---
+    # Updated to use arrays even if we have single values to follow best practice for best EMQ scores
     meta_payload_user_data = {
         "client_ip_address": payload_ip,
         "client_user_agent": client_user_agent,
         "fbc": fbc_val,
         "fbp": fbp_val,
-        "em": hashed_email,
-        "fn": hashed_first_name,
-        "ln": hashed_last_name,
-        "ph": hashed_phone,
-        "country": hashed_country,
-        "ct": hashed_city,
-        "zp": hashed_zip,
-        "external_id": hashed_external_id
+        # Wrap these in lists to match Meta's preferred schema
+        "em": [hashed_email] if hashed_email else None,
+        "fn": [hashed_first_name] if hashed_first_name else None,
+        "ln": [hashed_last_name] if hashed_last_name else None,
+        "ph": [hashed_phone] if hashed_phone else None,
+        "country": [hashed_country] if hashed_country else None,
+        "ct": [hashed_city] if hashed_city else None,
+        "zp": [hashed_zip] if hashed_zip else None,
+        "external_id": [hashed_external_id] if hashed_external_id else None
     }
-    # Remove empty keys
-    meta_payload_user_data = {k: v for k, v in meta_payload_user_data.items() if v}
+
+    # Clean out None values so we don't send "em": null
+    meta_payload_user_data = {k: v for k, v in meta_payload_user_data.items() if v is not None}
 
     meta_payload_event_data = {
         "event_name": payload.event_name,
