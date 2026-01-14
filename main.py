@@ -75,6 +75,12 @@ def verify_shopify_hmac(secret: str, body: bytes, hmac_header: str) -> bool:
     try:
         hash_digest = hmac.new(secret.encode('utf-8'), body, hashlib.sha256).digest()
         computed_hmac_b64 = base64.b64encode(hash_digest)
+        # --- DEBUGGING START (Remove after fixing) ---
+        logging.info(f"🔍 DEBUG: Secret being used: {secret[:5]}...{secret[-5:]} (Length: {len(secret)})")
+        logging.info(f"🔍 DEBUG: Received Body Length: {len(body)}")
+        logging.info(f"🔍 DEBUG: Shopify Sent HMAC:   {hmac_header}")
+        logging.info(f"🔍 DEBUG: Calculated HMAC:     {computed_hmac_b64}")
+        # --- DEBUGGING END ---
         return hmac.compare_digest(computed_hmac_b64, hmac_header.encode('utf-8'))
     except Exception as e:
         logging.error(f"HMAC validation error: {e}")
