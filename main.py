@@ -208,6 +208,50 @@ async def _process_single_event_logic(
 
 # --- API Endpoints ---
 
+@app.get("/healthz")
+async def healthz():
+    """
+    Standard Cloud-Native Health Check.
+    Checks connectivity to Redis and the status of the Celery Worker.
+    """
+    health_report = {
+        "status": "healthy",
+        "components": {
+            "api": "online",
+            "redis": "unknown",
+            "worker": "unknown"
+        }
+    }
+
+    # 1. Check Redis Connection
+    try:
+        # We check if we can successfully ping the Redis broker
+        celery_app.connection().ensure_connection()
+        health_report["components"]["redis"] = "online"
+    except Exception as e:
+        health_report["status"] = "unhealthy"
+        health_report["components"]["redis"] = f"offline: {str(e)}"
+
+    # 2. Check Celery Worker Presence
+    try:
+        inspector = celery_app.control.inspect()
+        # Returns a dict of active workers
+        active = inspector.active()
+        if active:
+            health_report["components"]["worker"] = "online"
+        else:
+            health_report["status"] = "unhealthy"
+            health_report["components"]["worker"] = "offline (no active workers found)"
+    except Exception as e:
+        health_report["status"] = "unhealthy"
+        health_report["components"]["worker"] = f"error: {str(e)}"
+
+    if health_report["status"] != "healthy":
+        # Returns a 503 so Render/Postman knows immediately there is an issue
+        raise HTTPException(status_code=503, detail=health_report)
+
+    return health_report
+
 @app.post("/process-event")
 async def process_event(request: Request, response: Response):
     """
