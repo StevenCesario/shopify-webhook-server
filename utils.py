@@ -46,21 +46,28 @@ def send_to_meta_capi(event_data: dict, test_code: Optional[str] = None):
 
     logging.info("Sending payload to Meta CAPI: %s", json.dumps(meta_payload, indent=2))
 
-    try:
-        response = requests.post(CAPI_URL, json=meta_payload)
-        response.raise_for_status()
-        logging.info("Meta CAPI Success Response: %s", response.json())
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        # Construct a detailed error message including the response body if available
-        error_msg = f"Meta CAPI request failed: {str(e)}"
-        if hasattr(e, 'response') and e.response is not None:
-            try:
-                # Append the JSON error from Meta (e.g., "Unexpected key")
-                error_msg += f" - Response: {e.response.text}"
-            except Exception:
-                pass
+    # --- DEV MODE START: Prevent actual sending ---
+    logging.info("🚫 DRY RUN: Would have been successfully sent to Meta!")
+    
+    # Return a fake success response so main.py doesn't crash
+    return {"id": "MOCK_EVENT_ID_12345", "status": "mock_success"}
+
+    # --- REAL CODE (Commented Out) ---
+    # try:
+    #     response = requests.post(CAPI_URL, json=meta_payload)
+    #     response.raise_for_status()
+    #     logging.info("Meta CAPI Success Response: %s", response.json())
+    #     return response.json()
+    # except requests.exceptions.RequestException as e:
+    #     # Construct a detailed error message including the response body if available
+    #     error_msg = f"Meta CAPI request failed: {str(e)}"
+    #     if hasattr(e, 'response') and e.response is not None:
+    #         try:
+    #             # Append the JSON error from Meta (e.g., "Unexpected key")
+    #             error_msg += f" - Response: {e.response.text}"
+    #         except Exception:
+    #             pass
         
-        logging.error(error_msg)
-        # Raise a ConnectionError so the caller knows it failed
-        raise ConnectionError(error_msg)
+    #     logging.error(error_msg)
+    #     # Raise a ConnectionError so the caller knows it failed
+    #     raise ConnectionError(error_msg)
