@@ -1,0 +1,25 @@
+name = "meta-capi-pixel"
+type = "web_pixel_extension"
+uid = "4072536e-c925-cdd7-5c9c-1b106b7414f5344d542e"
+
+runtime_context = "strict"
+
+# Configure privacy settings
+# We need marketing/analytics consent to run
+[customer_privacy]
+analytics = true
+marketing = true
+preferences = false
+sale_of_data = "enabled"
+
+[settings]
+type = "object"
+
+# Define a setting field for our API endpoint
+[settings.fields.pixelEndpoint]
+name = "Pixel API Endpoint"
+description = "The URL to send event data to."
+type = "single_line_text_field"
+validations = [
+  { name = "min", value = "1" }
+]
