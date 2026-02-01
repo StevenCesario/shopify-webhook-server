@@ -30,7 +30,7 @@ except KeyError:
     sys.exit(1) # Crash the program
 
 # --- Allowed Origins for CORS ---
-shopify_page_domain = "https://wearhelios.com/"
+shopify_page_domain = "https://pupsense.shop/"
 dev_store_domain = "https://helios-dev-store.myshopify.com/"
 
 # --- FastAPI App Initialization ---
